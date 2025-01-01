@@ -2,6 +2,7 @@ from playwright.sync_api import sync_playwright
 import sys
 
 CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+CHROME_PROFILE_PATH = r"C:\Users\royro\AppData\Local\Google\Chrome\User Data\Profile 10"
 DEBUG_PORT = 9901
 
 def openChromeInWindows():
@@ -13,12 +14,13 @@ def openChromeInWindows():
     - Non-headless mode
     - Remote debugging port 9901
     - Path to Chrome executable
+    - Specific Chrome profile path (Profile 10)
     """
     try:
         with sync_playwright() as p:
             # Launch the browser with specific Chrome path and debugging port
             browser = p.chromium.launch_persistent_context(
-                user_data_dir="./user_data",  # Persist user data
+                user_data_dir=CHROME_PROFILE_PATH,  # Use specific Chrome profile
                 executable_path=CHROME_PATH,
                 headless=False,  # Ensure browser is visible
                 viewport=None,  # Use actual screen size
