@@ -42,8 +42,9 @@ class ChromeBrowser:
             self.driver = None
 
 
+
 def openSingleChrome(url: str = "about:blank") -> None:
-    """Open a single Chrome browser instance using Playwright with specified port.
+    """Open a single Chrome browser instance using Playwright.
 
     Args:
         url (str): URL to open in the browser. Defaults to about:blank.
@@ -71,5 +72,5 @@ if __name__ == "__main__":
     browser.close()
 
 
-    # Example usage of openSingleChrome
-    openSingleChrome("https://www.tiktok.com")
+# Example usage of openSingleChrome
+openSingleChrome("https://www.tiktok.com")
