@@ -1,0 +1,19 @@
+{
+  "name": "tiktok-multiproject",
+  "version": "1.0.0",
+  "description": "Multi-project repository for TikTok related functionalities",
+  "main": "index.js",
+  "scripts": {
+    "lint": "eslint . --ext .ts,.tsx",
+    "test": "jest"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^5.0.0",
+    "@typescript-eslint/parser": "^5.0.0",
+    "eslint": "^8.0.0",
+    "typescript": "^4.5.0",
+    "jest": "^27.0.0",
+    "@types/jest": "^27.0.0"
+  }
+}
