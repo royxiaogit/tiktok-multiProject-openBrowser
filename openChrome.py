@@ -43,15 +43,17 @@ class ChromeBrowser:
 
 
 
-def openSingleChrome(url: str = "about:blank") -> None:
+def openSingleChrome(url: str = "about:blank", headless: bool = False) -> None:
     """Open a single Chrome browser instance using Playwright.
 
     Args:
         url (str): URL to open in the browser. Defaults to about:blank.
+        headless (bool): Whether to run browser in headless mode. Defaults to False.
     """
     with sync_playwright() as p:
+        print(f"Launching Chrome browser{'in headless mode ' if headless else ' '}with port 9901...")
         browser = p.chromium.launch(
-            headless=False,
+            headless=headless,
             args=[
                 '--remote-debugging-port=9901',
                 '--no-sandbox',
@@ -61,8 +63,10 @@ def openSingleChrome(url: str = "about:blank") -> None:
         page = context.new_page()
         page.goto(url)
         # Keep the browser open
+        print(f"Browser opened successfully at {url}")
         input("Press Enter to close the browser...")
         browser.close()
+        print("Browser closed successfully")
 
 if __name__ == "__main__":
     # Example usage
