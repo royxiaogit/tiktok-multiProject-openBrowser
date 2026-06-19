@@ -1,0 +1,5 @@
+tiktok_sales_reporter/reports/
+tiktok_sales_reporter/config/shops.json
+__pycache__/
+*.pyc
+node_modules/

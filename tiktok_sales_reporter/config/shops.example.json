@@ -1,0 +1,40 @@
+{
+  "_comment": "复制此文件为 shops.json，并填入你自己的配置",
+  "shops": [
+    {
+      "name": "马来西亚店铺-示例",
+      "country": "MY",
+      "seller_center_url": "https://seller-my.tiktok.com/",
+      "chrome_profile_path": "C:\\Users\\你的用户名\\AppData\\Local\\Google\\Chrome\\User Data\\Profile 1",
+      "enabled": true
+    },
+    {
+      "name": "泰国店铺-示例",
+      "country": "TH",
+      "seller_center_url": "https://seller-th.tiktok.com/",
+      "chrome_profile_path": "C:\\Users\\你的用户名\\AppData\\Local\\Google\\Chrome\\User Data\\Profile 2",
+      "enabled": true
+    },
+    {
+      "name": "越南店铺-示例",
+      "country": "VN",
+      "seller_center_url": "https://seller-vn.tiktok.com/",
+      "chrome_profile_path": "C:\\Users\\你的用户名\\AppData\\Local\\Google\\Chrome\\User Data\\Profile 3",
+      "enabled": true
+    },
+    {
+      "name": "菲律宾店铺-示例",
+      "country": "PH",
+      "seller_center_url": "https://seller-ph.tiktok.com/",
+      "chrome_profile_path": "C:\\Users\\你的用户名\\AppData\\Local\\Google\\Chrome\\User Data\\Profile 4",
+      "enabled": true
+    }
+  ],
+  "settings": {
+    "chrome_exe_path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "reports_dir": "reports",
+    "page_load_timeout": 30000,
+    "wait_after_load": 5000,
+    "headless": false
+  }
+}
