@@ -6,6 +6,8 @@ TikTok Shop 销售数据抓取模块
 
 import json
 import re
+import socket
+import subprocess
 import time
 import logging
 from datetime import datetime
@@ -217,6 +219,61 @@ def _scrape_finance(page, shop: dict, settings: dict) -> str:
 
 
 # ─────────────────────────────────────────────
+# Chrome 自动检测 / 启动
+# ─────────────────────────────────────────────
+
+def _port_open(port: int) -> bool:
+    """检查本地端口是否有进程在监听"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def _ensure_chrome(shop: dict, settings: dict) -> int:
+    """
+    确保对应店铺的 Chrome 已在 debug_port 上运行并监听 CDP。
+    - 如果已经在跑 → 直接返回端口，完全不碰其他 Chrome 窗口
+    - 如果没在跑 → 自动启动一个新 Chrome 窗口（使用 chrome_profile_path，
+      与用户其他 Chrome 实例完全独立，不会干扰）
+    """
+    port = shop.get("debug_port", settings.get("debug_port", 9222))
+
+    if _port_open(port):
+        logger.info(f"  Chrome 已在端口 {port} 运行，直接连接")
+        return port
+
+    # 自动启动 Chrome（新窗口，独立 user-data-dir，不影响任何现有窗口）
+    profile_path  = Path(shop["chrome_profile_path"])
+    user_data_dir = str(profile_path.parent)
+    profile_dir   = profile_path.name
+
+    logger.info(f"  端口 {port} 未监听，自动启动 Chrome（profile={profile_dir}）...")
+    subprocess.Popen([
+        settings["chrome_exe_path"],
+        f"--user-data-dir={user_data_dir}",
+        f"--profile-directory={profile_dir}",
+        f"--remote-debugging-port={port}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--no-restore-session-state",
+        shop["seller_center_url"],
+    ])
+
+    # 等待 Chrome 就绪（最多 20 秒）
+    for _ in range(20):
+        time.sleep(1)
+        if _port_open(port):
+            logger.info(f"  Chrome 就绪（端口 {port}）")
+            time.sleep(2)   # 等页面基本加载
+            return port
+
+    raise RuntimeError(
+        f"Chrome 在 {port} 端口启动超时。\n"
+        f"请手动运行: python tiktok_sales_reporter\\launch_browser.py"
+    )
+
+
+# ─────────────────────────────────────────────
 # 主流程
 # ─────────────────────────────────────────────
 
@@ -236,30 +293,19 @@ def scrape_shop(shop: dict, settings: dict) -> dict:
     logger.info(f"\n{'─'*40}")
     logger.info(f"处理: {shop['name']} ({shop['country']})")
 
-    port = shop.get("debug_port", settings.get("debug_port", 9222))
-
     try:
+        # 自动检测/启动 Chrome（不会关闭任何已有的 Chrome 窗口）
+        port = _ensure_chrome(shop, settings)
+
         with sync_playwright() as p:
-            # 连接到你已经手动打开并登录好的 Chrome（CDP 远程调试）
-            try:
-                browser = p.chromium.connect_over_cdp(
-                    f"http://127.0.0.1:{port}", timeout=15000
-                )
-            except Exception as e:
-                result["error"] = f"无法连接端口 {port}，请先运行 launch_browser.py 打开并登录 Chrome"
-                logger.error(
-                    f"  连接调试端口 {port} 失败：{e}\n"
-                    f"  请先运行: python tiktok_sales_reporter\\launch_browser.py"
-                )
-                return result
+            browser = p.chromium.connect_over_cdp(
+                f"http://127.0.0.1:{port}", timeout=15000
+            )
 
-            # 复用已登录的 profile context（不新建、不污染登录状态）
-            if browser.contexts:
-                context = browser.contexts[0]
-            else:
-                context = browser.new_context()
+            # 复用已登录的 context，不新建 profile
+            context = browser.contexts[0] if browser.contexts else browser.new_context()
 
-            # 只开一个新标签来抓数据
+            # 只开一个新标签，抓完就关，保留你所有其他标签
             page = context.new_page()
             page.set_default_timeout(settings.get("page_load_timeout", 30000))
 
@@ -277,14 +323,12 @@ def scrape_shop(shop: dict, settings: dict) -> dict:
                 else:
                     result["error"] = "需要重新登录"
             finally:
-                # 只关掉我们自己开的标签，保留你的登录标签
                 try:
-                    page.close()
+                    page.close()   # 只关新标签
                 except Exception:
                     pass
 
-            # 仅断开 CDP 连接，不会关闭你的 Chrome
-            browser.close()
+            browser.close()   # 断开 CDP 连接，不关 Chrome
 
     except Exception as e:
         result["error"] = str(e)[:80]
