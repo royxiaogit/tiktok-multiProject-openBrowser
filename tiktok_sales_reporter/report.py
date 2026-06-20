@@ -71,7 +71,7 @@ def generate_report(results: list, output_dir: str = None) -> str:
     ws.title = f"{today} 销售日报"
 
     # ── 标题行 ──
-    ws.merge_cells("A1:F1")
+    ws.merge_cells("A1:G1")
     title_cell = ws["A1"]
     title_cell.value = f"TikTok 多店铺销售日报  |  {today}"
     title_cell.font = Font(bold=True, color="FFFFFF", size=15)
@@ -80,7 +80,7 @@ def generate_report(results: list, output_dir: str = None) -> str:
     ws.row_dimensions[1].height = 36
 
     # ── 生成时间 ──
-    ws.merge_cells("A2:F2")
+    ws.merge_cells("A2:G2")
     ts_cell = ws["A2"]
     ts_cell.value = f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  |  共 {len(results)} 个店铺"
     ts_cell.font = Font(color="FFFFFF", size=10)
@@ -89,8 +89,8 @@ def generate_report(results: list, output_dir: str = None) -> str:
     ws.row_dimensions[2].height = 20
 
     # ── 表头 ──
-    headers = ["序号", "国家", "店铺名称", "今日 GMV", "今日订单数", "状态"]
-    col_widths = [6, 10, 25, 22, 14, 12]
+    headers = ["序号", "国家", "店铺名称", "今日 GMV", "今日售出件数", "可提现金额", "状态"]
+    col_widths = [6, 10, 25, 18, 14, 18, 20]
     for col, (h, w) in enumerate(zip(headers, col_widths), 1):
         _cell(ws, 3, col, h, bold=True, fill=SUBHEADER_FILL, font_color="FFFFFF", size=11)
         ws.column_dimensions[get_column_letter(col)].width = w
@@ -113,9 +113,10 @@ def generate_report(results: list, output_dir: str = None) -> str:
         _cell(ws, row, 1, idx, fill=fill)
         _cell(ws, row, 2, f"{flag} {country}", fill=fill)
         _cell(ws, row, 3, r["shop_name"], fill=fill, align="left")
-        _cell(ws, row, 4, r["gmv"], fill=fill, align="right")
-        _cell(ws, row, 5, r["orders"], fill=fill)
-        _cell(ws, row, 6, status_text, fill=fill)
+        _cell(ws, row, 4, r.get("today_gmv", "N/A"), fill=fill, align="right")
+        _cell(ws, row, 5, r.get("today_items_sold", "N/A"), fill=fill)
+        _cell(ws, row, 6, r.get("available_to_withdraw", "N/A"), fill=fill, align="right")
+        _cell(ws, row, 7, status_text, fill=fill)
 
         ws.row_dimensions[row].height = 22
 
@@ -125,15 +126,15 @@ def generate_report(results: list, output_dir: str = None) -> str:
 
     # ── 汇总区域 ──
     summary_start = len(results) + 5
-    ws.merge_cells(f"A{summary_start}:F{summary_start}")
+    ws.merge_cells(f"A{summary_start}:G{summary_start}")
     _cell(ws, summary_start, 1, "汇总统计", bold=True, fill=HEADER_FILL, font_color="FFFFFF", size=12)
-    ws.merge_cells(f"A{summary_start}:F{summary_start}")
+    ws.merge_cells(f"A{summary_start}:G{summary_start}")
     ws.row_dimensions[summary_start].height = 28
 
     stat_row = summary_start + 1
     _cell(ws, stat_row, 1, "指标", bold=True, fill=SUBHEADER_FILL, font_color="FFFFFF")
     _cell(ws, stat_row, 2, "数值", bold=True, fill=SUBHEADER_FILL, font_color="FFFFFF")
-    ws.merge_cells(f"B{stat_row}:F{stat_row}")
+    ws.merge_cells(f"B{stat_row}:G{stat_row}")
 
     stats = [
         ("总店铺数", str(len(results))),
@@ -146,7 +147,7 @@ def generate_report(results: list, output_dir: str = None) -> str:
         r = stat_row + 1 + i
         fill = ALT_FILL if i % 2 == 0 else None
         _cell(ws, r, 1, label, bold=True, fill=fill, align="left")
-        ws.merge_cells(f"B{r}:F{r}")
+        ws.merge_cells(f"B{r}:G{r}")
         _cell(ws, r, 2, value, fill=fill, align="left")
         ws.row_dimensions[r].height = 20
 
