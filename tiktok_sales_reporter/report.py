@@ -64,7 +64,11 @@ def generate_report(results: list, output_dir: str = None) -> str:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     today = datetime.now().strftime("%Y-%m-%d")
-    filename = output_dir / f"TikTok销售日报_{today}.xlsx"
+    base_filename = output_dir / f"TikTok销售日报_{today}.xlsx"
+    filename = base_filename
+    if filename.exists():
+        ts = datetime.now().strftime("%H%M%S")
+        filename = output_dir / f"TikTok销售日报_{today}_{ts}.xlsx"
 
     wb = openpyxl.Workbook()
     ws = wb.active
