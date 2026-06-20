@@ -130,7 +130,7 @@ def _scrape_analytics(page, shop: dict, settings: dict) -> tuple:
 
     # ── 选"Last 30 days"筛选 ──
     _select_last30days(page)
-    time.sleep(3)
+    _wait_charts_loaded(page)
 
     shot = _screenshot(page, f"{country}_analytics", settings)
 
@@ -193,6 +193,40 @@ def _select_last30days(page):
             continue
 
     logger.warning("  [Last30d] 未能点击 Last 30 days，使用当前页面数据")
+
+
+def _wait_charts_loaded(page, max_wait: int = 20):
+    """
+    等待页面图表加载完毕（loading spinner 消失）。
+    检测常见的 loading 类名 / aria 属性，最多等待 max_wait 秒。
+    """
+    # TikTok Seller Center 图表加载时会有带 loading/spin/skeleton 类名的元素
+    loading_selectors = [
+        '[class*="loading"]:visible',
+        '[class*="spinner"]:visible',
+        '[class*="spin"]:visible',
+        '[class*="skeleton"]:visible',
+        '[aria-busy="true"]:visible',
+        'svg[class*="loading"]:visible',
+    ]
+
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        still_loading = False
+        for sel in loading_selectors:
+            try:
+                if page.locator(sel).count() > 0:
+                    still_loading = True
+                    break
+            except Exception:
+                continue
+        if not still_loading:
+            logger.info("  [图表] 加载完毕")
+            time.sleep(1)   # 额外等 1 秒让渲染稳定
+            return
+        time.sleep(0.8)
+
+    logger.warning(f"  [图表] 等待超过 {max_wait}s，直接截图")
 
 
 def _extract_gmv(page, sym: str) -> str:
