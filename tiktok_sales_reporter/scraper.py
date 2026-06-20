@@ -36,15 +36,24 @@ def load_config():
 # 截图辅助
 # ─────────────────────────────────────────────
 
-def _screenshot(page, label: str, settings: dict):
+def _screenshot(page, label: str, settings: dict, full_page: bool = True) -> str:
+    """整页截图，返回保存路径（失败返回空串）"""
     try:
-        d = Path(settings.get("reports_dir", "reports")) / "screenshots"
+        d = Path(__file__).parent / settings.get("reports_dir", "reports") / "screenshots"
         d.mkdir(parents=True, exist_ok=True)
-        path = d / f"{label}_{datetime.now().strftime('%H%M%S')}.png"
-        page.screenshot(path=str(path))
+        path = d / f"{label}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        # 滚到顶部再截图，保证整页内容完整
+        try:
+            page.evaluate("window.scrollTo(0, 0)")
+            time.sleep(0.5)
+        except Exception:
+            pass
+        page.screenshot(path=str(path), full_page=full_page)
         logger.info(f"  截图: {path.name}")
-    except Exception:
-        pass
+        return str(path)
+    except Exception as e:
+        logger.warning(f"  截图失败: {e}")
+        return ""
 
 
 # ─────────────────────────────────────────────
@@ -100,7 +109,7 @@ def _wait_for_login(page, shop: dict, settings: dict) -> bool:
 # ─────────────────────────────────────────────
 
 def _scrape_analytics(page, shop: dict, settings: dict) -> tuple:
-    """返回 (today_gmv, today_items_sold)"""
+    """返回 (gmv, items_sold, screenshot_path)"""
     country  = shop["country"].upper()
     base     = shop["seller_center_url"].rstrip("/")
     url      = f"{base}/compass/data-overview?shop_region={country}"
@@ -111,26 +120,26 @@ def _scrape_analytics(page, shop: dict, settings: dict) -> tuple:
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
     except PlaywrightTimeout:
         logger.warning("  [营业额] 页面加载超时")
-        return "N/A", "N/A"
+        return "N/A", "N/A", ""
 
     time.sleep(4)
 
     if any(k in page.url for k in ("login", "register", "passport")):
         logger.warning("  [营业额] 检测到登录页，请重新登录")
-        return "需要登录", "需要登录"
+        return "需要登录", "需要登录", ""
 
     # ── 选"Last 30 days"筛选 ──
     _select_last30days(page)
     time.sleep(3)
 
-    _screenshot(page, f"{country}_analytics", settings)
+    shot = _screenshot(page, f"{country}_analytics", settings)
 
     # ── 提取数据 ──
     gmv   = _extract_gmv(page, sym)
     items = _extract_items_sold(page)
 
     logger.info(f"  [营业额] GMV={gmv}  售出={items}")
-    return gmv, items
+    return gmv, items, shot
 
 
 def _select_last30days(page):
@@ -187,15 +196,19 @@ def _select_last30days(page):
 
 
 def _extract_gmv(page, sym: str) -> str:
-    """从页面文本中提取 GMV 金额"""
+    """从页面文本中提取 GMV 金额（含小数，页面可能把小数拆成单独元素）"""
     try:
         text = page.inner_text("body")
-        # 找出所有货币金额
-        pattern = rf'{re.escape(sym)}\s*([\d,\.]+)'
-        matches = re.findall(pattern, text)
-        if matches:
-            # 取第一个出现的（通常是最显眼的 GMV 数值）
-            return f"{sym} {matches[0]}"
+        # 整数部分 + 可选小数部分（小数可能被换行/空格隔开，如 "RM313\n.20"）
+        pattern = rf'{re.escape(sym)}\s*([\d,]+)\s*([.．]\s*\d+)?'
+        m = re.search(pattern, text)
+        if m:
+            intpart = m.group(1).replace(" ", "")
+            dec = m.group(2)
+            if dec:
+                dec = dec.replace(" ", "").replace("．", ".")
+                return f"{sym} {intpart}{dec}"
+            return f"{sym} {intpart}"
     except Exception as e:
         logger.warning(f"  GMV 提取失败: {e}")
     return "N/A"
@@ -224,8 +237,8 @@ def _extract_items_sold(page) -> str:
 # 页面2：回款（可提现金额）
 # ─────────────────────────────────────────────
 
-def _scrape_finance(page, shop: dict, settings: dict) -> str:
-    """返回 available_to_withdraw 字符串"""
+def _scrape_finance(page, shop: dict, settings: dict) -> tuple:
+    """返回 (available_to_withdraw, screenshot_path)"""
     country = shop["country"].upper()
     base    = shop["seller_center_url"].rstrip("/")
     url     = f"{base}/finance/withdraw-new?shop_region={country}"
@@ -236,14 +249,14 @@ def _scrape_finance(page, shop: dict, settings: dict) -> str:
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
     except PlaywrightTimeout:
         logger.warning("  [回款] 页面加载超时")
-        return "N/A"
+        return "N/A", ""
 
     time.sleep(3)
 
     if any(k in page.url for k in ("login", "register", "passport")):
-        return "需要登录"
+        return "需要登录", ""
 
-    _screenshot(page, f"{country}_finance", settings)
+    shot = _screenshot(page, f"{country}_finance", settings)
 
     try:
         text  = page.inner_text("body")
@@ -253,21 +266,21 @@ def _scrape_finance(page, shop: dict, settings: dict) -> str:
         for i, line in enumerate(lines):
             if "available to withdraw" in line.lower():
                 search_block = "\n".join(lines[max(0, i-2): i+8])
-                m = re.search(rf'{re.escape(sym)}\s*([\d,\.]+)', search_block)
+                m = re.search(rf'{re.escape(sym)}\s*([\d,]+(?:[.．]\d+)?)', search_block)
                 if m:
                     val = f"{sym} {m.group(1)}"
                     logger.info(f"  [回款] 可提现={val}")
-                    return val
+                    return val, shot
 
         # 兜底：直接全文搜货币金额（第一个）
-        m = re.search(rf'{re.escape(sym)}\s*([\d,\.]+)', text)
+        m = re.search(rf'{re.escape(sym)}\s*([\d,]+(?:[.．]\d+)?)', text)
         if m:
-            return f"{sym} {m.group(1)}"
+            return f"{sym} {m.group(1)}", shot
 
     except Exception as e:
         logger.warning(f"  [回款] 提取失败: {e}")
 
-    return "N/A"
+    return "N/A", shot
 
 
 # ─────────────────────────────────────────────
@@ -338,6 +351,8 @@ def scrape_shop(shop: dict, settings: dict) -> dict:
         "today_items_sold":     "N/A",
         "available_to_withdraw":"N/A",
         "currency":             CURRENCY_CODE.get(shop["country"].upper(), ""),
+        "analytics_screenshot": "",
+        "finance_screenshot":   "",
         "status":               "failed",
         "error":                "",
     }
@@ -371,12 +386,15 @@ def scrape_shop(shop: dict, settings: dict) -> dict:
                     return result
 
                 # 1. 营业额页面
-                gmv, items = _scrape_analytics(page, shop, settings)
-                result["today_gmv"]        = gmv
-                result["today_items_sold"] = items
+                gmv, items, a_shot = _scrape_analytics(page, shop, settings)
+                result["today_gmv"]            = gmv
+                result["today_items_sold"]     = items
+                result["analytics_screenshot"] = a_shot
 
                 # 2. 回款页面
-                result["available_to_withdraw"] = _scrape_finance(page, shop, settings)
+                withdraw, f_shot = _scrape_finance(page, shop, settings)
+                result["available_to_withdraw"] = withdraw
+                result["finance_screenshot"]    = f_shot
 
                 if gmv != "需要登录":
                     result["status"] = "success"
