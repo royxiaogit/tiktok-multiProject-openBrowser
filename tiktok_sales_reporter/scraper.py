@@ -92,8 +92,12 @@ def scrape_shop(shop: dict, settings: dict) -> dict:
 
     try:
         with sync_playwright() as p:
+            profile_path = Path(shop["chrome_profile_path"])
+            user_data_dir = str(profile_path.parent)   # .../User Data
+            profile_dir   = profile_path.name           # Profile 4
+
             browser = p.chromium.launch_persistent_context(
-                user_data_dir=shop["chrome_profile_path"],
+                user_data_dir=user_data_dir,
                 executable_path=settings["chrome_exe_path"],
                 headless=settings.get("headless", False),
                 viewport=None,
@@ -103,6 +107,7 @@ def scrape_shop(shop: dict, settings: dict) -> dict:
                     "--start-maximized",
                     "--disable-blink-features=AutomationControlled",
                     "--disable-dev-shm-usage",
+                    f"--profile-directory={profile_dir}",
                 ],
                 ignore_default_args=["--enable-automation"],
                 locale="zh-CN",
