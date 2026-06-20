@@ -48,6 +48,54 @@ def _screenshot(page, label: str, settings: dict):
 
 
 # ─────────────────────────────────────────────
+# 登录检测 / 等待登录
+# ─────────────────────────────────────────────
+
+def _is_login_page(url: str) -> bool:
+    return any(k in url for k in ("login", "register", "passport"))
+
+
+def _wait_for_login(page, shop: dict, settings: dict) -> bool:
+    """
+    打开店铺首页，确认是否已登录。
+    若未登录：提示用户在窗口里登录，并轮询等待（最多 login_wait_seconds 秒），
+    用户登录完成后自动继续。返回 True=已登录，False=超时仍未登录。
+    """
+    base   = shop["seller_center_url"].rstrip("/")
+    wait_s = settings.get("login_wait_seconds", 180)
+
+    try:
+        page.goto(base + "/homepage", wait_until="domcontentloaded", timeout=30000)
+    except PlaywrightTimeout:
+        pass
+    time.sleep(3)
+
+    if not _is_login_page(page.url):
+        return True
+
+    logger.warning(
+        f"  ⚠ 未登录！请在弹出的 Chrome 窗口里登录 TikTok（{shop['name']}）。\n"
+        f"    登录成功后脚本会自动继续，最多等待 {wait_s} 秒..."
+    )
+
+    waited = 0
+    while waited < wait_s:
+        time.sleep(5)
+        waited += 5
+        try:
+            page.reload(wait_until="domcontentloaded", timeout=20000)
+        except Exception:
+            pass
+        if not _is_login_page(page.url):
+            logger.info("  ✓ 检测到已登录，继续抓取")
+            time.sleep(2)
+            return True
+
+    logger.warning("  ✗ 等待登录超时，跳过该店铺")
+    return False
+
+
+# ─────────────────────────────────────────────
 # 页面1：营业额（今日 GMV + 售出件数）
 # ─────────────────────────────────────────────
 
@@ -310,6 +358,14 @@ def scrape_shop(shop: dict, settings: dict) -> dict:
             page.set_default_timeout(settings.get("page_load_timeout", 30000))
 
             try:
+                # 0. 先确认登录（未登录则等用户在窗口里登录完再继续）
+                if not _wait_for_login(page, shop, settings):
+                    result["today_gmv"]             = "需要登录"
+                    result["today_items_sold"]      = "需要登录"
+                    result["available_to_withdraw"] = "需要登录"
+                    result["error"]                 = "需要重新登录"
+                    return result
+
                 # 1. 营业额页面
                 gmv, items = _scrape_analytics(page, shop, settings)
                 result["today_gmv"]        = gmv

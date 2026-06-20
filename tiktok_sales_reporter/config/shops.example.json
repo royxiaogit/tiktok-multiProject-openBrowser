@@ -39,6 +39,7 @@
     "reports_dir": "reports",
     "page_load_timeout": 30000,
     "wait_after_load": 5000,
+    "login_wait_seconds": 180,
     "headless": false
   }
 }
