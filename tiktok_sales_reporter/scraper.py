@@ -119,8 +119,8 @@ def _scrape_analytics(page, shop: dict, settings: dict) -> tuple:
         logger.warning("  [营业额] 检测到登录页，请重新登录")
         return "需要登录", "需要登录"
 
-    # ── 点击"Today"筛选按钮 ──
-    _click_today(page)
+    # ── 选"Last 30 days"筛选 ──
+    _select_last30days(page)
     time.sleep(3)
 
     _screenshot(page, f"{country}_analytics", settings)
@@ -133,53 +133,57 @@ def _scrape_analytics(page, shop: dict, settings: dict) -> tuple:
     return gmv, items
 
 
-def _click_today(page):
-    """尝试多种方式点击 Today 预设按钮"""
-    # 先尝试直接可见的 Today 按钮
-    candidates = [
-        lambda: page.get_by_role("button", name=re.compile(r"^Today$", re.I)).first,
-        lambda: page.get_by_text("Today", exact=True).first,
-        lambda: page.locator("li").filter(has_text=re.compile(r"^Today$")).first,
-        lambda: page.locator("span").filter(has_text=re.compile(r"^Today$")).first,
+def _select_last30days(page):
+    """点击日期筛选里的 Last 30 days 选项"""
+    target = re.compile(r"last\s*30", re.I)
+
+    presets = [
+        lambda: page.get_by_role("button", name=target).first,
+        lambda: page.get_by_role("option", name=target).first,
+        lambda: page.locator("li").filter(has_text=target).first,
+        lambda: page.locator("span").filter(has_text=target).first,
+        lambda: page.get_by_text(target).first,
     ]
-    for fn in candidates:
+
+    # 直接尝试（下拉可能已展开）
+    for fn in presets:
         try:
             loc = fn()
-            if loc.is_visible(timeout=2000):
+            if loc.is_visible(timeout=1000):
                 loc.click()
-                logger.info("  [Today] 点击成功")
+                logger.info("  [Last30d] 直接点击成功")
                 return
         except Exception:
             continue
 
-    # 如果没找到，尝试先打开日期选择器再找
-    try:
-        date_inputs = [
-            page.locator('[class*="date-picker"], [class*="DatePicker"], [class*="date-range"]').first,
-            page.locator('input[placeholder*="date"], input[placeholder*="Date"]').first,
-        ]
-        for di in date_inputs:
-            try:
-                if di.is_visible(timeout=1500):
-                    di.click()
-                    time.sleep(1)
-                    # 再找 Today
-                    for fn in candidates:
-                        try:
-                            loc = fn()
-                            if loc.is_visible(timeout=1500):
-                                loc.click()
-                                logger.info("  [Today] 打开日历后点击成功")
-                                return
-                        except Exception:
-                            continue
-                    break
-            except Exception:
+    # 先点开日期选择器
+    openers = [
+        '[class*="date-picker"]:not(input):not([class*="panel"])',
+        '[class*="DatePicker"]:not(input)',
+        '[class*="date-range"]',
+        '[class*="DateRange"]',
+    ]
+    for sel in openers:
+        try:
+            opener = page.locator(sel).first
+            if not opener.is_visible(timeout=1000):
                 continue
-    except Exception:
-        pass
+            opener.click()
+            time.sleep(1)
+            for fn in presets:
+                try:
+                    loc = fn()
+                    if loc.is_visible(timeout=1000):
+                        loc.click()
+                        logger.info("  [Last30d] 打开选择器后点击成功")
+                        return
+                except Exception:
+                    continue
+            break
+        except Exception:
+            continue
 
-    logger.warning("  [Today] 未能点击 Today 按钮，使用当前页面数据")
+    logger.warning("  [Last30d] 未能点击 Last 30 days，使用当前页面数据")
 
 
 def _extract_gmv(page, sym: str) -> str:

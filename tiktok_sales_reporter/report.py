@@ -77,7 +77,7 @@ def generate_report(results: list, output_dir: str = None) -> str:
     # ── 标题行 ──
     ws.merge_cells("A1:G1")
     title_cell = ws["A1"]
-    title_cell.value = f"TikTok 多店铺销售日报  |  {today}"
+    title_cell.value = f"TikTok 多店铺销售报表（近30天）  |  {today}"
     title_cell.font = Font(bold=True, color="FFFFFF", size=15)
     title_cell.fill = HEADER_FILL
     title_cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -93,7 +93,7 @@ def generate_report(results: list, output_dir: str = None) -> str:
     ws.row_dimensions[2].height = 20
 
     # ── 表头 ──
-    headers = ["序号", "国家", "店铺名称", "今日 GMV", "今日售出件数", "可提现金额", "状态"]
+    headers = ["序号", "国家", "店铺名称", "近30天 GMV", "近30天售出件数", "可提现金额", "状态"]
     col_widths = [6, 10, 25, 18, 14, 18, 20]
     for col, (h, w) in enumerate(zip(headers, col_widths), 1):
         _cell(ws, 3, col, h, bold=True, fill=SUBHEADER_FILL, font_color="FFFFFF", size=11)
