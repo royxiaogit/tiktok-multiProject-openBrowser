@@ -252,6 +252,8 @@ def scrape_shop(shop: dict, settings: dict) -> dict:
                     "--no-sandbox",
                     "--disable-blink-features=AutomationControlled",
                     "--disable-dev-shm-usage",
+                    "--no-restore-session-state",
+                    "--restore-last-session=false",
                     f"--profile-directory={profile_dir}",
                 ],
                 ignore_default_args=["--enable-automation"],
