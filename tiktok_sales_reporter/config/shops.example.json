@@ -1,32 +1,36 @@
 {
-  "_comment": "复制此文件为 shops.json，并填入你自己的配置",
+  "_comment": "复制此文件为 shops.json，并填入你自己的配置。每个店铺用独立的 user-data-dir 目录和 debug_port，避免 Chrome 单例冲突。",
   "shops": [
     {
       "name": "马来西亚店铺-示例",
       "country": "MY",
       "seller_center_url": "https://seller-my.tiktok.com/",
-      "chrome_profile_path": "C:\\Users\\你的用户名\\AppData\\Local\\Google\\Chrome\\User Data\\Profile 1",
+      "chrome_profile_path": "C:\\TikTokScraper\\MY-01\\Profile 4",
+      "debug_port": 9222,
       "enabled": true
     },
     {
       "name": "泰国店铺-示例",
       "country": "TH",
       "seller_center_url": "https://seller-th.tiktok.com/",
-      "chrome_profile_path": "C:\\Users\\你的用户名\\AppData\\Local\\Google\\Chrome\\User Data\\Profile 2",
+      "chrome_profile_path": "C:\\TikTokScraper\\TH-01\\Profile 5",
+      "debug_port": 9223,
       "enabled": true
     },
     {
       "name": "越南店铺-示例",
       "country": "VN",
       "seller_center_url": "https://seller-vn.tiktok.com/",
-      "chrome_profile_path": "C:\\Users\\你的用户名\\AppData\\Local\\Google\\Chrome\\User Data\\Profile 3",
+      "chrome_profile_path": "C:\\TikTokScraper\\VN-01\\Profile 6",
+      "debug_port": 9224,
       "enabled": true
     },
     {
       "name": "菲律宾店铺-示例",
       "country": "PH",
       "seller_center_url": "https://seller-ph.tiktok.com/",
-      "chrome_profile_path": "C:\\Users\\你的用户名\\AppData\\Local\\Google\\Chrome\\User Data\\Profile 4",
+      "chrome_profile_path": "C:\\TikTokScraper\\PH-01\\Profile 7",
+      "debug_port": 9225,
       "enabled": true
     }
   ],

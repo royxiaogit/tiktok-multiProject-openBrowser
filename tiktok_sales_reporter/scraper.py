@@ -236,46 +236,54 @@ def scrape_shop(shop: dict, settings: dict) -> dict:
     logger.info(f"\n{'─'*40}")
     logger.info(f"处理: {shop['name']} ({shop['country']})")
 
+    port = shop.get("debug_port", settings.get("debug_port", 9222))
+
     try:
-        profile_path  = Path(shop["chrome_profile_path"])
-        user_data_dir = str(profile_path.parent)
-        profile_dir   = profile_path.name
-
         with sync_playwright() as p:
-            browser = p.chromium.launch_persistent_context(
-                user_data_dir=user_data_dir,
-                executable_path=settings["chrome_exe_path"],
-                headless=settings.get("headless", False),
-                viewport={"width": 1440, "height": 900},
-                accept_downloads=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-dev-shm-usage",
-                    "--no-restore-session-state",
-                    "--restore-last-session=false",
-                    f"--profile-directory={profile_dir}",
-                ],
-                ignore_default_args=["--enable-automation"],
-                locale="en-US",
-            )
+            # 连接到你已经手动打开并登录好的 Chrome（CDP 远程调试）
+            try:
+                browser = p.chromium.connect_over_cdp(
+                    f"http://127.0.0.1:{port}", timeout=15000
+                )
+            except Exception as e:
+                result["error"] = f"无法连接端口 {port}，请先运行 launch_browser.py 打开并登录 Chrome"
+                logger.error(
+                    f"  连接调试端口 {port} 失败：{e}\n"
+                    f"  请先运行: python tiktok_sales_reporter\\launch_browser.py"
+                )
+                return result
 
-            page = browser.new_page()
+            # 复用已登录的 profile context（不新建、不污染登录状态）
+            if browser.contexts:
+                context = browser.contexts[0]
+            else:
+                context = browser.new_context()
+
+            # 只开一个新标签来抓数据
+            page = context.new_page()
             page.set_default_timeout(settings.get("page_load_timeout", 30000))
 
-            # 1. 营业额页面
-            gmv, items = _scrape_analytics(page, shop, settings)
-            result["today_gmv"]        = gmv
-            result["today_items_sold"] = items
+            try:
+                # 1. 营业额页面
+                gmv, items = _scrape_analytics(page, shop, settings)
+                result["today_gmv"]        = gmv
+                result["today_items_sold"] = items
 
-            # 2. 回款页面
-            result["available_to_withdraw"] = _scrape_finance(page, shop, settings)
+                # 2. 回款页面
+                result["available_to_withdraw"] = _scrape_finance(page, shop, settings)
 
-            if gmv != "需要登录":
-                result["status"] = "success"
-            else:
-                result["error"] = "需要重新登录"
+                if gmv != "需要登录":
+                    result["status"] = "success"
+                else:
+                    result["error"] = "需要重新登录"
+            finally:
+                # 只关掉我们自己开的标签，保留你的登录标签
+                try:
+                    page.close()
+                except Exception:
+                    pass
 
+            # 仅断开 CDP 连接，不会关闭你的 Chrome
             browser.close()
 
     except Exception as e:
