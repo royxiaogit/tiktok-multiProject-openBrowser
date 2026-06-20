@@ -57,7 +57,7 @@ def generate_report(results: list, output_dir: str = None) -> str:
     生成 Excel 报表，返回文件路径。
     results: scraper.run_all_shops() 的返回值
     """
-    config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    config = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
     if output_dir is None:
         output_dir = Path(__file__).parent / config["settings"].get("reports_dir", "reports")
     output_dir = Path(output_dir)
