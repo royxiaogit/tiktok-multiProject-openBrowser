@@ -69,9 +69,13 @@ def _probe(page):
 
 def wait_until_ready(page, max_wait=60, min_text_len=600):
     """
-    真正等页面加载完：
+    真正等页面加载完（以【正文内容是否稳定】为准）：
     - 等 networkidle
-    - 反复检测正文长度 + 可见转圈/骨架，直到【有实际内容且连续稳定】
+    - 反复检测正文长度，直到【内容充足且连续稳定】
+    - 转圈/骨架数量只作"加速参考"，不作硬性判定：
+      TikTok 首页等页面存在常驻的 spin/loading/skeleton 类元素，
+      若强制要求转圈=0，会把已经加载好的页面永远误判为"未加载"，
+      导致每页都白等满 max_wait + 反复刷新。
     - 返回最终 (是否加载成功, 正文长度, 可见loading数)
     """
     try:
@@ -85,14 +89,14 @@ def wait_until_ready(page, max_wait=60, min_text_len=600):
     sig = _probe(page)
     while time.time() < deadline:
         sig = _probe(page)
-        content_ok = sig["len"] >= min_text_len      # 内容已出现
-        no_spin    = sig["spin"] == 0                 # 没有可见的转圈/骨架
-        unchanged  = abs(sig["len"] - last_len) <= 30 # 正文基本不再变化
+        content_ok = sig["len"] >= min_text_len       # 内容已出现
+        unchanged  = abs(sig["len"] - last_len) <= 30  # 正文基本不再变化
         last_len   = sig["len"]
 
-        if content_ok and no_spin and unchanged:
+        if content_ok and unchanged:
+            need = 2 if sig["spin"] == 0 else 3        # 无转圈更快确认；有常驻转圈则多稳一会儿
             stable += 1
-            if stable >= 3:        # 连续 3 次（约 3 秒）稳定才算真正加载完
+            if stable >= need:
                 break
         else:
             stable = 0
@@ -108,7 +112,8 @@ def wait_until_ready(page, max_wait=60, min_text_len=600):
         pass
     time.sleep(1.5)
 
-    loaded = sig["len"] >= min_text_len and sig["spin"] == 0
+    # 判定"已加载"以正文内容为准（常驻转圈不应否定一个内容完整的页面）
+    loaded = sig["len"] >= min_text_len
     return loaded, sig["len"], sig["spin"]
 
 

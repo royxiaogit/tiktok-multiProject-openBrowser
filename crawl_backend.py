@@ -69,6 +69,14 @@ def scrape_hint(label: str) -> str:
     return "（待人工确认该页面的关键指标）"
 
 
+# 这些不是真正的内容页（左上角 LOGO/品牌名等），遍历时跳过
+SKIP_LABELS = {"seller center", "tiktok shop", "tiktok seller center"}
+
+
+def _skip(label: str) -> bool:
+    return label.strip().lower() in SKIP_LABELS
+
+
 # ─────────────────────────────────────────────
 # 左侧导航：几何识别（不依赖 class 名）
 # ─────────────────────────────────────────────
@@ -182,7 +190,7 @@ def crawl(page, base):
 
     for it in top_items:
         label = it["text"]
-        if label in visited:
+        if label in visited or _skip(label):
             continue
 
         before = {x["text"] for x in sidebar_items(page)}
