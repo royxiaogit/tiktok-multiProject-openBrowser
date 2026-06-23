@@ -103,24 +103,27 @@ _SIDEBAR_JS = r"""
 }
 """
 
-# 按文字(可选期望 top 坐标) 在左列里定位元素中心点 => 用 mouse.click 真实点击
+# 按文字在左列里定位元素 → 先 scrollIntoView 再取坐标，解决菜单展开后其他项被
+# 推出可视区导致 getBoundingClientRect() 高度/坐标失效的问题。
 _LOCATE_JS = r"""
 (args) => {
-  const { label, top } = args;
-  let best = null, bestScore = 1e12;
+  const { label } = args;
+  let best = null, bestArea = 1e12;
   const all = document.querySelectorAll('a,[role="menuitem"],li,div,span');
   for (const el of all) {
+    if ((el.innerText || '').trim() !== label) continue;
     const r = el.getBoundingClientRect();
-    if (r.right <= 300 && r.left >= 0 && r.left < 42 &&
-        r.height >= 18 && r.height <= 72 && r.width > 70) {
-      if ((el.innerText || '').trim() !== label) continue;
-      const area = r.width * r.height;
-      const dy = (top == null) ? 0 : Math.abs(r.top - top);
-      const score = dy * 1000 + area;                  // 优先：离期望位置近 + 元素最小(最具体)
-      if (score < bestScore) { bestScore = score; best = { x: r.left + r.width / 2, y: r.top + r.height / 2 }; }
-    }
+    // 只限左列（x 轴）；y 轴不限——元素可能已滚出可视区
+    if (r.right > 350 || r.left > 60 || r.width < 50) continue;
+    const area = r.width * (r.height || 30);
+    if (area < bestArea) { bestArea = area; best = el; }
   }
-  return best;
+  if (!best) return null;
+  // 把元素滚入可视区，然后再取坐标
+  best.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+  const r2 = best.getBoundingClientRect();
+  if (r2.width < 10 || r2.height < 10) return null;   // 真正隐藏的元素
+  return { x: r2.left + r2.width / 2, y: r2.top + r2.height / 2 };
 }
 """
 
@@ -133,8 +136,9 @@ def sidebar_items(page):
 
 
 def click_nav(page, label, top=None) -> bool:
+    """点击左侧导航项；top 参数保留仅供日志，不再作坐标匹配依据。"""
     try:
-        pt = page.evaluate(_LOCATE_JS, {"label": label, "top": top})
+        pt = page.evaluate(_LOCATE_JS, {"label": label})
     except Exception:
         pt = None
     if not pt:
@@ -192,6 +196,17 @@ def crawl(page, base):
         label = it["text"]
         if label in visited or _skip(label):
             continue
+
+        # 每次点新的顶层菜单前，先回首页让侧栏恢复干净状态：
+        # Products 展开 7 个子项后，其下的 Logistics/Marketing 等会被推出侧栏
+        # 可视区，必须在未展开的首页侧栏里点击才可靠。
+        cur_url = page.url
+        if "homepage" not in cur_url:
+            try:
+                page.goto(f"{base}/homepage", wait_until="domcontentloaded", timeout=20000)
+                time.sleep(1.5)
+            except Exception:
+                pass
 
         before = {x["text"] for x in sidebar_items(page)}
         if not click_nav(page, label, it["top"]):
