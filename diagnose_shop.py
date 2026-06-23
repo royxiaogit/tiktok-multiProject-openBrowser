@@ -39,43 +39,66 @@ def port_open(port):
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 
-def wait_until_ready(page, max_wait=35):
-    """真正等页面加载完：networkidle + 骨架屏/转圈消失 + 内容稳定"""
-    # 1. 等网络基本空闲（TikTok 有长连接，超时无所谓）
+# 判断"加载完成"的 JS：返回正文长度 + 当前可见的转圈/骨架元素数量
+_PROBE_JS = """
+() => {
+  const vis = el => {
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return false;
+    const s = getComputedStyle(el);
+    return s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0';
+  };
+  let spin = 0;
+  try {
+    const sel = '[class*="loading"i],[class*="spin"i],[class*="skeleton"i],[aria-busy="true"]';
+    spin = [...document.querySelectorAll(sel)].filter(vis).length;
+  } catch (e) {}
+  const t = (document.body && document.body.innerText)
+    ? document.body.innerText.replace(/\\s+/g, '') : '';
+  return { len: t.length, spin };
+}
+"""
+
+
+def _probe(page):
     try:
-        page.wait_for_load_state("networkidle", timeout=12000)
+        return page.evaluate(_PROBE_JS)
+    except Exception:
+        return {"len": 0, "spin": 999}
+
+
+def wait_until_ready(page, max_wait=60, min_text_len=600):
+    """
+    真正等页面加载完：
+    - 等 networkidle
+    - 反复检测正文长度 + 可见转圈/骨架，直到【有实际内容且连续稳定】
+    - 返回最终 (是否加载成功, 正文长度, 可见loading数)
+    """
+    try:
+        page.wait_for_load_state("networkidle", timeout=15000)
     except Exception:
         pass
 
-    # 2. 轮询：骨架屏 / loading / 转圈 是否还可见
-    loading_selectors = [
-        '[class*="skeleton"]:visible',
-        '[class*="Skeleton"]:visible',
-        '[class*="loading"]:visible',
-        '[class*="Loading"]:visible',
-        '[class*="spinner"]:visible',
-        '[class*="spin"]:visible',
-        '[aria-busy="true"]:visible',
-        'svg[class*="loading"]:visible',
-    ]
     deadline = time.time() + max_wait
+    last_len = -1
     stable = 0
+    sig = _probe(page)
     while time.time() < deadline:
-        loading = 0
-        for sel in loading_selectors:
-            try:
-                loading += page.locator(sel).count()
-            except Exception:
-                pass
-        if loading == 0:
+        sig = _probe(page)
+        content_ok = sig["len"] >= min_text_len      # 内容已出现
+        no_spin    = sig["spin"] == 0                 # 没有可见的转圈/骨架
+        unchanged  = abs(sig["len"] - last_len) <= 30 # 正文基本不再变化
+        last_len   = sig["len"]
+
+        if content_ok and no_spin and unchanged:
             stable += 1
-            if stable >= 2:          # 连续 2 次都没有 loading 才算稳
+            if stable >= 3:        # 连续 3 次（约 3 秒）稳定才算真正加载完
                 break
         else:
             stable = 0
-        time.sleep(0.8)
+        time.sleep(1.0)
 
-    # 3. 触发懒加载：滚到底再滚回顶部
+    # 触发懒加载：滚到底再滚回顶部
     try:
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         time.sleep(1.2)
@@ -83,9 +106,29 @@ def wait_until_ready(page, max_wait=35):
         time.sleep(1.0)
     except Exception:
         pass
-
-    # 4. 额外缓冲，让图表渲染稳定
     time.sleep(1.5)
+
+    loaded = sig["len"] >= min_text_len and sig["spin"] == 0
+    return loaded, sig["len"], sig["spin"]
+
+
+def goto_and_wait(page, url, label, max_wait=60):
+    """打开 URL 并等加载完；若加载后仍是空白页则刷新重试一次"""
+    for attempt in range(2):
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=25000)
+        except PWTimeout:
+            print(f"    ⚠ [{label}] 导航超时")
+        loaded, length, spin = wait_until_ready(page, max_wait=max_wait)
+        if loaded:
+            return True, length, spin
+        if attempt == 0:
+            print(f"    ↻ [{label}] 仍未加载完（正文{length}字/转圈{spin}），刷新重试...")
+            try:
+                page.reload(wait_until="domcontentloaded", timeout=25000)
+            except Exception:
+                pass
+    return False, length, spin
 
 
 def screenshot(page, name):
@@ -166,17 +209,13 @@ def main():
 
         # ── 1. 先开首页，读取真实导航链接 ──
         print("  [首页] 加载并读取导航菜单...")
-        try:
-            page.goto(f"{base}/homepage", wait_until="domcontentloaded", timeout=25000)
-        except PWTimeout:
-            pass
-        wait_until_ready(page)
+        loaded, length, spin = goto_and_wait(page, f"{base}/homepage", "首页")
         links = discover_links(page, base)
         report["discovered_links"] = links
-        print(f"    发现 {len(links)} 个导航链接")
-        # 首页截图
+        print(f"    {'✓' if loaded else '⚠ 未完全加载'}  发现 {len(links)} 个导航链接（正文{length}字）")
         report["pages"]["homepage"] = {
             "label": "首页概况", "url": page.url, "source": "直接",
+            "loaded": loaded, "text_len": length,
             "error": page_has_error(page), "screenshot": screenshot(page, "homepage"),
         }
 
@@ -186,30 +225,33 @@ def main():
                 continue
             url, source = match_url(key, pattern, fallback, base, links)
             print(f"  [{label}] ({source}) {url}")
-            try:
-                page.goto(url, wait_until="domcontentloaded", timeout=25000)
-            except PWTimeout:
-                print("    ⚠ 加载超时")
 
-            # analytics 页先选 Last 30 days
+            loaded, length, spin = goto_and_wait(page, url, label)
+
+            # analytics 页：加载完后再选 Last 30 days，并再次等稳定
             if key == "analytics":
-                wait_until_ready(page)
                 try:
                     btn = page.get_by_text(re.compile(r"last\s*30", re.I)).first
                     if btn.is_visible(timeout=2500):
                         btn.click()
                         print("    已选 Last 30 days")
+                        loaded, length, spin = wait_until_ready(page)
                 except Exception:
                     pass
 
-            wait_until_ready(page)
             err = page_has_error(page)
             shot = screenshot(page, key)
             report["pages"][key] = {
                 "label": label, "url": url, "final_url": page.url,
-                "source": source, "error": err, "screenshot": shot,
+                "source": source, "loaded": loaded, "text_len": length,
+                "visible_loading": spin, "error": err, "screenshot": shot,
             }
-            flag = "❌ 错误页(No matching route)" if err else "✓"
+            if err:
+                flag = "❌ 错误页(No matching route)"
+            elif not loaded:
+                flag = f"⚠ 未完全加载(正文{length}字/转圈{spin})"
+            else:
+                flag = "✓ 已加载"
             print(f"    {flag}  截图: {Path(shot).name if not shot.startswith('[') else shot}")
 
         page.close()
