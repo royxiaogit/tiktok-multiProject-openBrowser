@@ -178,13 +178,49 @@ def capture(page, label, group, url, loaded=True, length=0, spin=0):
 # 遍历整个左侧导航
 # ─────────────────────────────────────────────
 
+# 把左侧栏（可滚动容器）滚到顶，确保顶层项都在 DOM 中、坐标正常
+_SCROLL_TOP_JS = r"""
+() => {
+  const els = document.querySelectorAll('div,nav,aside,ul');
+  for (const el of els) {
+    const r = el.getBoundingClientRect();
+    if (r.left < 40 && r.width > 120 && r.width < 340 &&
+        el.scrollHeight > el.clientHeight + 40) {
+      el.scrollTop = 0;
+    }
+  }
+}
+"""
+
+
+def scroll_sidebar_top(page):
+    try:
+        page.evaluate(_SCROLL_TOP_JS)
+        time.sleep(0.4)
+    except Exception:
+        pass
+
+
+def reset_to_home(page, base):
+    """回首页并把侧栏滚到顶，保证侧栏处于干净、未展开、可点击的状态。"""
+    try:
+        page.goto(f"{base}/homepage", wait_until="domcontentloaded", timeout=20000)
+    except Exception:
+        pass
+    wait_until_ready(page, max_wait=30)
+    scroll_sidebar_top(page)
+
+
 def crawl(page, base):
     pages = []
     print("  打开首页并读取左侧导航...")
     loaded, length, spin = goto_and_wait(page, f"{base}/homepage", "Homepage")
     time.sleep(1)
+    scroll_sidebar_top(page)
 
     top_items = sidebar_items(page)
+    # 顶层导航全集：用于排除"假子项"（侧栏滚动/渲染导致顶层项被误判成某父菜单的子项）
+    top_labels = {i["text"] for i in top_items}
     labels = [i["text"] for i in top_items]
     print(f"  顶层导航 {len(top_items)} 项: {labels}")
 
@@ -197,44 +233,40 @@ def crawl(page, base):
         if label in visited or _skip(label):
             continue
 
-        # 每次点新的顶层菜单前，先回首页让侧栏恢复干净状态：
-        # Products 展开 7 个子项后，其下的 Logistics/Marketing 等会被推出侧栏
-        # 可视区，必须在未展开的首页侧栏里点击才可靠。
-        cur_url = page.url
-        if "homepage" not in cur_url:
-            try:
-                page.goto(f"{base}/homepage", wait_until="domcontentloaded", timeout=20000)
-                time.sleep(1.5)
-            except Exception:
-                pass
+        # 每个顶层项前都回首页 + 滚到顶：确保侧栏干净、该项一定可见可点
+        reset_to_home(page, base)
 
-        before = {x["text"] for x in sidebar_items(page)}
-        if not click_nav(page, label, it["top"]):
+        ok = click_nav(page, label)
+        if not ok:                       # 偶发未渲染：滚到顶再试一次
+            scroll_sidebar_top(page)
+            ok = click_nav(page, label)
+        if not ok:
             print(f"    ✗ 无法点击导航项: {label}")
             continue
-        time.sleep(1.8)
+        time.sleep(2.5)                  # 等可能的展开动画 + 子项渲染
 
         after_items = sidebar_items(page)
+        # 真正的子项 = 点击后出现、且【不是顶层导航项】、且未访问过
         children = [x for x in after_items
-                    if x["text"] not in before and x["text"] not in visited]
+                    if x["text"] not in top_labels and x["text"] not in visited]
 
         if children:
-            # 父菜单：逐个抓子页面
+            # 父菜单：逐个抓子页面（如 Account health → Shop health / Store rating ...）
             print(f"  ▼ {label} 展开子菜单: {[c['text'] for c in children]}")
             visited.add(label)
             for c in children:
                 if c["text"] in visited:
                     continue
-                if not click_nav(page, c["text"], c["top"]):
-                    # 子项可能因父菜单收起而消失，重新展开父菜单再点
-                    click_nav(page, label, it["top"])
+                if not click_nav(page, c["text"]):
+                    # 子项可能因父菜单收起而消失：重新点父项展开再点子项
+                    click_nav(page, label)
                     time.sleep(1.2)
-                    click_nav(page, c["text"], c["top"])
+                    click_nav(page, c["text"])
                 ld, ln, sp = wait_until_ready(page)
                 pages.append(capture(page, c["text"], label, page.url, ld, ln, sp))
                 visited.add(c["text"])
         else:
-            # 叶子页面
+            # 叶子/直接导航页（如 Orders、Marketing 这类单页带内部 tab 的）
             ld, ln, sp = wait_until_ready(page)
             pages.append(capture(page, label, "", page.url, ld, ln, sp))
             visited.add(label)
