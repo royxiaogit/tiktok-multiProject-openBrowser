@@ -255,97 +255,63 @@ def _shot(page, label, group):
     return capture(page, label, group, page.url, ld, ln, sp)
 
 
-# ── Analytics 日期选择：两步（打开主触发器 → 选 Last 30 days）─────────────
-# 步骤①：找"主日期触发器"。页面上有两个日期：主区间（最左）和 Compare 区间（右）。
-#        取匹配日期形态、且【最靠左】的那个 => 主触发器（避开 Compare）。
-_OPEN_DATE_JS = r"""
-() => {
-  const isDate = t =>
-    /last\s*\d+\s*day/i.test(t) ||
-    /[A-Za-z]{3,}\s*\d{1,2},?\s*\d{4}\s*[-–]\s*[A-Za-z]{3,}\s*\d{1,2},?\s*\d{4}/.test(t);
-  let best = null;
-  for (const el of document.querySelectorAll('div,span,button')) {
-    const r = el.getBoundingClientRect();
-    if (r.left < 180 || r.top < 60 || r.top > 760 || r.width < 70 || r.height < 16) continue;
-    const txt = (el.innerText || '').replace(/\s+/g, ' ').trim();
-    if (!txt || txt.length > 48 || !isDate(txt)) continue;
-    if (/compare/i.test(txt)) continue;            // 跳过含 Compare 的元素
-    const area = r.width * r.height;
-    // 最靠左优先；同列时取面积最小（最具体的那个文本节点）
-    if (!best || r.left < best.left - 5 ||
-        (Math.abs(r.left - best.left) <= 5 && area < best.area)) {
-      best = { x: r.left + r.width / 2, y: r.top + r.height / 2,
-               left: r.left, area, txt };
-    }
-  }
-  return best;
-}
-"""
-
-# 步骤②：在弹出面板里找 "Last 30 days"（可能被 CSS 截断显示成 "Last 30 da..."，
-#        但 innerText 仍是完整文本）。取以 "Last 30" 开头、可见、面积最小的元素。
-_PICK_30_JS = r"""
-() => {
-  let best = null;
-  const sel = 'div,span,button,li,a,[role="option"],[role="menuitem"]';
-  for (const el of document.querySelectorAll(sel)) {
-    const r = el.getBoundingClientRect();
-    if (r.width < 30 || r.height < 12) continue;
-    const s = getComputedStyle(el);
-    if (s.visibility === 'hidden' || s.display === 'none' || s.opacity === '0') continue;
-    const txt = (el.innerText || '').replace(/\s+/g, ' ').trim();
-    if (!/^last\s*30\b/i.test(txt) || txt.length > 20) continue;
-    const area = r.width * r.height;
-    if (!best || area < best.area) {
-      best = { x: r.left + r.width / 2, y: r.top + r.height / 2, area, txt };
-    }
-  }
-  return best;
-}
-"""
-
-
 def _select_last_30_days(page) -> bool:
     """
-    打开 Analytics 主日期选择器并选择 "Last 30 days"。
-    最多尝试两轮（若第一轮没点开面板则重开）。
+    点击 Analytics 日期筛选里的 "Last 30 days" 选项。
+    沿用 scraper.py 中已验证有效的逻辑：先直接尝试各种定位方式，
+    若选项未展开再尝试点开日期选择器后重试。
     """
-    for attempt in range(1, 3):
-        # 步骤① 打开主日期触发器
-        trig = None
-        for _ in range(8):
-            try:
-                trig = page.evaluate(_OPEN_DATE_JS)
-            except Exception:
-                trig = None
-            if trig:
-                break
-            time.sleep(0.5)
-        if trig:
-            print(f"      [日期触发器 第{attempt}次] {trig['txt']} → 打开")
-            try:
-                page.mouse.click(trig["x"], trig["y"])
-            except Exception:
-                pass
-            time.sleep(1.3)         # 等下拉面板弹出
-        else:
-            print(f"      ⚠ 第{attempt}次未找到日期触发器")
+    target = re.compile(r"last\s*30", re.I)
 
-        # 步骤② 在面板里选 "Last 30 days"
-        for _ in range(8):
-            try:
-                opt = page.evaluate(_PICK_30_JS)
-            except Exception:
-                opt = None
-            if opt:
-                print(f"      [日期选项] {opt['txt']} → 选中")
+    presets = [
+        lambda: page.get_by_role("button", name=target).first,
+        lambda: page.get_by_role("option", name=target).first,
+        lambda: page.locator("li").filter(has_text=target).first,
+        lambda: page.locator("span").filter(has_text=target).first,
+        lambda: page.get_by_text(target).first,
+    ]
+
+    # ── 直接尝试（选项面板可能已展开）──
+    for fn in presets:
+        try:
+            loc = fn()
+            if loc.is_visible(timeout=1000):
+                loc.click()
+                print("      [✓] Last 30 days 直接点击成功")
+                return True
+        except Exception:
+            continue
+
+    # ── 先点开日期选择器，再重试 ──
+    openers = [
+        '[class*="date-picker"]:not(input):not([class*="panel"])',
+        '[class*="DatePicker"]:not(input)',
+        '[class*="date-range"]',
+        '[class*="DateRange"]',
+    ]
+    for sel in openers:
+        try:
+            opener = page.locator(sel).first
+            if not opener.is_visible(timeout=1000):
+                continue
+            txt = opener.inner_text()
+            print(f"      [日期触发器] '{txt[:30]}' → 点击打开")
+            opener.click()
+            time.sleep(1.5)
+            for fn in presets:
                 try:
-                    page.mouse.click(opt["x"], opt["y"])
-                    return True
+                    loc = fn()
+                    if loc.is_visible(timeout=1500):
+                        loc.click()
+                        print("      [✓] 打开选择器后 Last 30 days 点击成功")
+                        return True
                 except Exception:
-                    pass
-            time.sleep(0.5)
-        print(f"      ⚠ 第{attempt}次未在面板找到 Last 30 days，重试...")
+                    continue
+            break
+        except Exception:
+            continue
+
+    print("      ⚠ 未能点击 Last 30 days，将截取当前默认视图")
     return False
 
 
@@ -396,17 +362,18 @@ def crawl(page, base):
     results.append(_shot(page, "Manage promotions", "Marketing"))
 
     # ── 4. Analytics — Last 30 days ─────────────────────────────────
-    _go_home(page, base)
-    _nav(page, "Analytics")
+    # 用直接 URL 导航（与 scraper.py 已验证有效的方式一致，避免 SPA 状态干扰）
+    try:
+        page.goto(f"{base}/compass/data-overview?shop_region=MY",
+                  wait_until="domcontentloaded", timeout=30000)
+    except Exception:
+        pass
     wait_until_ready(page, max_wait=45)
-    time.sleep(2.5)        # 等图表首次渲染、日期触发器出现
+    time.sleep(4)          # 等图表首次渲染（与 scraper.py 保持一致）
 
-    if not _select_last_30_days(page):
-        print("      ⚠ 未能选中 Last 30 days，将截取默认视图")
-
-    # 选完后数据要按30天重新拉取：先等正文稳定，再多给图表一些渲染时间
-    wait_until_ready(page, max_wait=40)
-    time.sleep(5)          # 等 GMV 趋势图 / breakdown 重渲染完成（避免转圈时截图）
+    _select_last_30_days(page)
+    time.sleep(3)          # 等 30 天数据加载完毕
+    wait_until_ready(page, max_wait=30)
     results.append(_shot(page, "Analytics (Last 30 days)", ""))
 
     # ── 5 & 6. Account health → Shop health / Store rating ──────────
