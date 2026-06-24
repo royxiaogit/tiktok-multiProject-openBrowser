@@ -1,13 +1,15 @@
 """
-TikTok Shop 后台全导航爬取工具
-------------------------------------------------
-- 连接已开启的 Chrome (CDP)，自动遍历左侧导航的【所有页面】，
-  包括展开 Account health 等父菜单下的子页面
-- 不猜 URL：通过点击真实导航项跳转，避免 "No matching route"
-- 每个页面等到内容真正加载完成再整页截图（复用 diagnose_shop 的等待逻辑）
-- 所有截图汇总进【一个 Excel】：
-    · "目录" sheet：所有页面 + 加载状态 + 跳转链接
-    · 每个页面一个 sheet（按导航名命名）：整页截图 + 建议抓取的数据
+TikTok Shop 后台关键页面精准抓取工具
+----------------------------------------------------
+只抓用户指定的 8 个页面，精确执行每页所需的交互操作：
+  1. Homepage
+  2. Manage orders          (Orders → Manage orders)
+  3. Manage promotions      (Marketing → Promotions → 点 Manage promotions tab)
+  4. Analytics Last 30 days (Analytics → 选 Last 30 days)
+  5. Shop health            (Account health → Shop health)
+  6. Store rating           (Account health → Store rating)
+  7. Transactions           (Finance → Transactions)
+  8. Withdrawals            (Finance → Withdrawals)
 
 用法：
     python crawl_backend.py
@@ -41,23 +43,16 @@ SHOT_DIR.mkdir(parents=True, exist_ok=True)
 
 IMG_TARGET_WIDTH = 1000   # Excel 内嵌图缩放到的宽度（像素）
 
-# ── 每类页面"建议抓取的数据"（按导航名关键词匹配，用于在 sheet 里给运营提示）──
+# ── 每页"建议抓取的数据"提示（Excel sheet 内显示给运营参考）──
 SCRAPE_HINTS = [
-    (r"home",                       "待发货数、待退货数、被拒商品、低库存/断货数、差评数、Shop Health 违规数（一站式预警源）"),
-    (r"shop health|account health", "Violation points 违规分、当前处罚、各类违规明细、距 24 分限流阈值还差多少"),
-    (r"store rating",               "店铺评分、各维度评分、差评趋势、是否触发 Affiliate 限制风险"),
-    (r"creator",                    "达人合作健康分、达人违规、合作达人数"),
-    (r"security",                   "账号安全状态、登录设备、异常登录提醒"),
-    (r"order",                      "待发货/已发货/已完成/已取消数量、超时未发货订单（重点）"),
-    (r"product",                    "在售/下架/被拒数量、各 SKU 库存、断货 SKU 清单"),
-    (r"logistic",                   "待打印面单、待揽收、运输异常/卡件"),
-    (r"finance",                    "可提现金额、待结算、已结算、结算周期"),
-    (r"analytic",                   "GMV、订单量、访客、转化率、流量来源（直播/视频/达人/搜索）"),
-    (r"affiliate",                  "合作达人数、达人带货 GMV、佣金支出、待审达人申请"),
-    (r"marketing",                  "进行中活动、广告花费、ROI、优惠券核销"),
-    (r"live|video",                 "直播场次、直播 GMV、观看数、视频挂车转化"),
-    (r"growth",                     "成长任务进度、可报名的平台活动/大促"),
-    (r"quick access",               "常用入口快捷方式（一般无需抓取）"),
+    (r"home",              "待发货数、待退货数、被拒商品数、低库存/断货SKU数、差评数、Shop Health 违规分（一站式预警首选）"),
+    (r"manage order",      "各状态订单量（待发货/已发货/已完成/已取消）、超时未发货订单列表（逾期风险）"),
+    (r"manage promotion",  "进行中促销数、各活动 GMV 贡献、优惠券核销率、折扣商品点击转化"),
+    (r"analytic",          "近30天 GMV 趋势、订单量、访客、转化率、流量来源拆分（直播/视频/达人/搜索/Feed）"),
+    (r"shop health",       "Violation points 违规分、当前处罚级别、各类违规明细、距 24 分限流阈值还差多少"),
+    (r"store rating",      "店铺综合评分、各维度分（物流/服务/商品质量）、差评数量趋势、是否触发 Affiliate 限制风险"),
+    (r"transaction",       "每笔结算明细、已完成订单金额、平台手续费、近期结算总额"),
+    (r"withdrawal",        "可提现余额、待结算金额、提现申请记录、结算周期与到账时间"),
 ]
 
 
@@ -175,10 +170,10 @@ def capture(page, label, group, url, loaded=True, length=0, spin=0):
 
 
 # ─────────────────────────────────────────────
-# 遍历整个左侧导航
+# 精准抓取：每个目标页面的点击序列
 # ─────────────────────────────────────────────
 
-# 把左侧栏（可滚动容器）滚到顶，确保顶层项都在 DOM 中、坐标正常
+# 侧栏滚到顶（展开子菜单后部分项会被推出可视区，回首页前先重置滚动）
 _SCROLL_TOP_JS = r"""
 () => {
   const els = document.querySelectorAll('div,nav,aside,ul');
@@ -192,86 +187,142 @@ _SCROLL_TOP_JS = r"""
 }
 """
 
+# 在主内容区（x > 160）按文本找可点击元素，用于点击页面内 tab / 日期选项
+_CONTENT_CLICK_JS = r"""
+(pat) => {
+  const rgx = new RegExp(pat, 'i');
+  const tags = 'button,[role="tab"],[role="option"],li,a,span,div';
+  for (const el of document.querySelectorAll(tags)) {
+    const r = el.getBoundingClientRect();
+    if (r.left < 160 || r.width < 40 || r.height < 14) continue;
+    const txt = (el.innerText || '').replace(/\s+/g, ' ').trim();
+    if (!txt || txt.length > 60) continue;
+    if (rgx.test(txt)) return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  }
+  return null;
+}
+"""
 
-def scroll_sidebar_top(page):
+
+def _scroll_sidebar_top(page):
     try:
         page.evaluate(_SCROLL_TOP_JS)
-        time.sleep(0.4)
+        time.sleep(0.3)
     except Exception:
         pass
 
 
-def reset_to_home(page, base):
-    """回首页并把侧栏滚到顶，保证侧栏处于干净、未展开、可点击的状态。"""
+def _go_home(page, base):
+    """回首页，让侧栏恢复未展开的干净状态。"""
     try:
         page.goto(f"{base}/homepage", wait_until="domcontentloaded", timeout=20000)
     except Exception:
         pass
     wait_until_ready(page, max_wait=30)
-    scroll_sidebar_top(page)
+    _scroll_sidebar_top(page)
+    time.sleep(0.4)
+
+
+def _nav(page, label) -> bool:
+    """点击侧栏导航项，失败后滚顶重试一次。"""
+    ok = click_nav(page, label)
+    if not ok:
+        _scroll_sidebar_top(page)
+        time.sleep(0.3)
+        ok = click_nav(page, label)
+    if not ok:
+        print(f"      ⚠ 无法点击侧栏: {label}")
+    return ok
+
+
+def _content_click(page, pattern, poll=8, interval=0.6) -> bool:
+    """在主内容区按正则文本找元素并点击，最多 poll 次轮询等待元素出现。"""
+    for _ in range(poll):
+        try:
+            pt = page.evaluate(_CONTENT_CLICK_JS, pattern)
+            if pt:
+                page.mouse.click(pt["x"], pt["y"])
+                return True
+        except Exception:
+            pass
+        time.sleep(interval)
+    return False
+
+
+def _shot(page, label, group):
+    """等页面加载完，截图并返回记录。"""
+    ld, ln, sp = wait_until_ready(page)
+    return capture(page, label, group, page.url, ld, ln, sp)
 
 
 def crawl(page, base):
-    pages = []
-    print("  打开首页并读取左侧导航...")
-    loaded, length, spin = goto_and_wait(page, f"{base}/homepage", "Homepage")
+    """
+    按固定顺序精准抓取 8 个关键页面。
+    每页都从首页出发，通过点击真实侧栏/Tab 项导航，等内容稳定后截图。
+    """
+    results = []
+    print("  开始精准抓取 8 个目标页面...\n")
+
+    # ── 1. Homepage ─────────────────────────────────────────────────
+    _go_home(page, base)
+    results.append(_shot(page, "Homepage", ""))
+
+    # ── 2. Orders → Manage orders ───────────────────────────────────
+    _go_home(page, base)
+    _nav(page, "Orders")
+    time.sleep(2)
+    # Manage orders 可能是侧栏子项，也可能是页面内 Tab
+    if not _nav(page, "Manage orders"):
+        _content_click(page, r"manage\s*order")
+    results.append(_shot(page, "Manage orders", "Orders"))
+
+    # ── 3. Marketing → Promotions → Manage promotions tab ───────────
+    _go_home(page, base)
+    _nav(page, "Marketing")
+    time.sleep(2)
+    _nav(page, "Promotions")
+    wait_until_ready(page, max_wait=30)
+    # 点页面内 "Manage promotions" 标签
+    if not _content_click(page, r"manage\s*promotion"):
+        print("      ⚠ 未找到 Manage promotions tab，截取当前状态")
     time.sleep(1)
-    scroll_sidebar_top(page)
+    results.append(_shot(page, "Manage promotions", "Marketing"))
 
-    top_items = sidebar_items(page)
-    # 顶层导航全集：用于排除"假子项"（侧栏滚动/渲染导致顶层项被误判成某父菜单的子项）
-    top_labels = {i["text"] for i in top_items}
-    labels = [i["text"] for i in top_items]
-    print(f"  顶层导航 {len(top_items)} 项: {labels}")
+    # ── 4. Analytics — Last 30 days ─────────────────────────────────
+    _go_home(page, base)
+    _nav(page, "Analytics")
+    wait_until_ready(page, max_wait=45)
+    # 先点日期下拉（通常显示 "Last 7 days"），展开后再选 "30 days"
+    if not _content_click(page, r"last\s*7\s*days?|last 7", poll=6):
+        # 某些版本直接有 "Last 30 days" 选项，无需先展开
+        pass
+    time.sleep(0.6)
+    if not _content_click(page, r"last\s*30\s*days?|30\s*days?", poll=6):
+        print("      ⚠ 未找到 Last 30 days 选项，截取默认视图")
+    wait_until_ready(page, max_wait=30)
+    results.append(_shot(page, "Analytics (Last 30 days)", ""))
 
-    # 首页本身作为一页
-    pages.append(capture(page, "Homepage", "", page.url, loaded, length, spin))
-    visited = {"Homepage"}
+    # ── 5 & 6. Account health → Shop health / Store rating ──────────
+    for sub in ["Shop health", "Store rating"]:
+        _go_home(page, base)
+        _nav(page, "Account health")
+        time.sleep(2.5)          # 等子菜单展开动画
+        if not _nav(page, sub):
+            print(f"      ⚠ 侧栏未找到 {sub}，尝试内容区点击...")
+            _content_click(page, re.escape(sub))
+        results.append(_shot(page, sub, "Account health"))
 
-    for it in top_items:
-        label = it["text"]
-        if label in visited or _skip(label):
-            continue
+    # ── 7 & 8. Finance → Transactions / Withdrawals ─────────────────
+    for sub in ["Transactions", "Withdrawals"]:
+        _go_home(page, base)
+        _nav(page, "Finance")
+        time.sleep(2.5)
+        if not _nav(page, sub):
+            print(f"      ⚠ 侧栏未找到 {sub}，尝试内容区点击...")
+            _content_click(page, re.escape(sub))
+        results.append(_shot(page, sub, "Finance"))
 
-        # 每个顶层项前都回首页 + 滚到顶：确保侧栏干净、该项一定可见可点
-        reset_to_home(page, base)
-
-        ok = click_nav(page, label)
-        if not ok:                       # 偶发未渲染：滚到顶再试一次
-            scroll_sidebar_top(page)
-            ok = click_nav(page, label)
-        if not ok:
-            print(f"    ✗ 无法点击导航项: {label}")
-            continue
-        time.sleep(2.5)                  # 等可能的展开动画 + 子项渲染
-
-        after_items = sidebar_items(page)
-        # 真正的子项 = 点击后出现、且【不是顶层导航项】、且未访问过
-        children = [x for x in after_items
-                    if x["text"] not in top_labels and x["text"] not in visited]
-
-        if children:
-            # 父菜单：逐个抓子页面（如 Account health → Shop health / Store rating ...）
-            print(f"  ▼ {label} 展开子菜单: {[c['text'] for c in children]}")
-            visited.add(label)
-            for c in children:
-                if c["text"] in visited:
-                    continue
-                if not click_nav(page, c["text"]):
-                    # 子项可能因父菜单收起而消失：重新点父项展开再点子项
-                    click_nav(page, label)
-                    time.sleep(1.2)
-                    click_nav(page, c["text"])
-                ld, ln, sp = wait_until_ready(page)
-                pages.append(capture(page, c["text"], label, page.url, ld, ln, sp))
-                visited.add(c["text"])
-        else:
-            # 叶子/直接导航页（如 Orders、Marketing 这类单页带内部 tab 的）
-            ld, ln, sp = wait_until_ready(page)
-            pages.append(capture(page, label, "", page.url, ld, ln, sp))
-            visited.add(label)
-
-    return pages
+    return results
 
 
 # ─────────────────────────────────────────────
