@@ -282,24 +282,82 @@ def crawl(page, base):
     time.sleep(2)
     _nav(page, "Promotions")
     wait_until_ready(page, max_wait=30)
-    # 点页面内 "Manage promotions" 标签
-    if not _content_click(page, r"manage\s*promotion"):
+    time.sleep(2)          # 等 tab 栏渲染完毕
+
+    # 点 "Manage promotions" tab：优先用 Playwright role 语义定位，兜底用坐标
+    tab_ok = False
+    try:
+        tab = page.get_by_role("tab", name=re.compile(r"manage\s*promotion", re.I)).first
+        tab.click(timeout=5000)
+        tab_ok = True
+    except Exception:
+        pass
+    if not tab_ok:
+        # 兜底：在内容区找文本匹配的元素
+        tab_ok = _content_click(page, r"Manage\s*promotions?", poll=12, interval=0.5)
+    if not tab_ok:
         print("      ⚠ 未找到 Manage promotions tab，截取当前状态")
-    time.sleep(1)
+
+    wait_until_ready(page, max_wait=30)
     results.append(_shot(page, "Manage promotions", "Marketing"))
 
     # ── 4. Analytics — Last 30 days ─────────────────────────────────
     _go_home(page, base)
     _nav(page, "Analytics")
     wait_until_ready(page, max_wait=45)
-    # 先点日期下拉（通常显示 "Last 7 days"），展开后再选 "30 days"
-    if not _content_click(page, r"last\s*7\s*days?|last 7", poll=6):
-        # 某些版本直接有 "Last 30 days" 选项，无需先展开
+    time.sleep(2)          # 等图表首次渲染
+
+    # 步骤①：点开日期选择器（点击当前日期显示区域，弹出下拉日历）
+    # TikTok Analytics 的日期触发器可能显示 "Last 7 days"、"Last X days" 或具体日期范围
+    _DATE_TRIGGER_JS = r"""
+    () => {
+      for (const el of document.querySelectorAll('button,div,span')) {
+        const r = el.getBoundingClientRect();
+        if (r.left < 160 || r.width < 60 || r.height < 20) continue;
+        const txt = (el.innerText || '').replace(/\s+/g,' ').trim();
+        if (!txt || txt.length > 60) continue;
+        // 匹配"Last N days"形式或"日期 - 日期"形式的触发器
+        if (/last\s*\d+\s*days?/i.test(txt) || /\d{4}.*[-–].*\d{4}/.test(txt)) {
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2, txt };
+        }
+      }
+      return null;
+    }
+    """
+    # 点日期触发器打开 picker
+    date_opened = False
+    for _ in range(8):
+        try:
+            info = page.evaluate(_DATE_TRIGGER_JS)
+            if info:
+                print(f"      [日期触发器] 找到: {info.get('txt','')} → 点击打开")
+                page.mouse.click(info["x"], info["y"])
+                date_opened = True
+                break
+        except Exception:
+            pass
+        time.sleep(0.5)
+    if not date_opened:
+        print("      ⚠ 未找到日期触发器，直接尝试 Last 30 days")
+
+    time.sleep(0.8)        # 等 dropdown/日历弹出
+
+    # 步骤②：在弹出的下拉面板里点 "Last 30 days"
+    day30_ok = False
+    try:
+        btn = page.get_by_text(re.compile(r"last\s*30", re.I)).first
+        if btn.is_visible(timeout=3000):
+            btn.click()
+            day30_ok = True
+    except Exception:
         pass
-    time.sleep(0.6)
-    if not _content_click(page, r"last\s*30\s*days?|30\s*days?", poll=6):
+    if not day30_ok:
+        day30_ok = _content_click(page, r"last\s*30", poll=10, interval=0.5)
+    if not day30_ok:
         print("      ⚠ 未找到 Last 30 days 选项，截取默认视图")
+
     wait_until_ready(page, max_wait=30)
+    time.sleep(2)          # 等图表重渲染完成
     results.append(_shot(page, "Analytics (Last 30 days)", ""))
 
     # ── 5 & 6. Account health → Shop health / Store rating ──────────
