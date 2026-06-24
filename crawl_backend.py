@@ -255,6 +255,100 @@ def _shot(page, label, group):
     return capture(page, label, group, page.url, ld, ln, sp)
 
 
+# ── Analytics 日期选择：两步（打开主触发器 → 选 Last 30 days）─────────────
+# 步骤①：找"主日期触发器"。页面上有两个日期：主区间（最左）和 Compare 区间（右）。
+#        取匹配日期形态、且【最靠左】的那个 => 主触发器（避开 Compare）。
+_OPEN_DATE_JS = r"""
+() => {
+  const isDate = t =>
+    /last\s*\d+\s*day/i.test(t) ||
+    /[A-Za-z]{3,}\s*\d{1,2},?\s*\d{4}\s*[-–]\s*[A-Za-z]{3,}\s*\d{1,2},?\s*\d{4}/.test(t);
+  let best = null;
+  for (const el of document.querySelectorAll('div,span,button')) {
+    const r = el.getBoundingClientRect();
+    if (r.left < 180 || r.top < 60 || r.top > 760 || r.width < 70 || r.height < 16) continue;
+    const txt = (el.innerText || '').replace(/\s+/g, ' ').trim();
+    if (!txt || txt.length > 48 || !isDate(txt)) continue;
+    if (/compare/i.test(txt)) continue;            // 跳过含 Compare 的元素
+    const area = r.width * r.height;
+    // 最靠左优先；同列时取面积最小（最具体的那个文本节点）
+    if (!best || r.left < best.left - 5 ||
+        (Math.abs(r.left - best.left) <= 5 && area < best.area)) {
+      best = { x: r.left + r.width / 2, y: r.top + r.height / 2,
+               left: r.left, area, txt };
+    }
+  }
+  return best;
+}
+"""
+
+# 步骤②：在弹出面板里找 "Last 30 days"（可能被 CSS 截断显示成 "Last 30 da..."，
+#        但 innerText 仍是完整文本）。取以 "Last 30" 开头、可见、面积最小的元素。
+_PICK_30_JS = r"""
+() => {
+  let best = null;
+  const sel = 'div,span,button,li,a,[role="option"],[role="menuitem"]';
+  for (const el of document.querySelectorAll(sel)) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 30 || r.height < 12) continue;
+    const s = getComputedStyle(el);
+    if (s.visibility === 'hidden' || s.display === 'none' || s.opacity === '0') continue;
+    const txt = (el.innerText || '').replace(/\s+/g, ' ').trim();
+    if (!/^last\s*30\b/i.test(txt) || txt.length > 20) continue;
+    const area = r.width * r.height;
+    if (!best || area < best.area) {
+      best = { x: r.left + r.width / 2, y: r.top + r.height / 2, area, txt };
+    }
+  }
+  return best;
+}
+"""
+
+
+def _select_last_30_days(page) -> bool:
+    """
+    打开 Analytics 主日期选择器并选择 "Last 30 days"。
+    最多尝试两轮（若第一轮没点开面板则重开）。
+    """
+    for attempt in range(1, 3):
+        # 步骤① 打开主日期触发器
+        trig = None
+        for _ in range(8):
+            try:
+                trig = page.evaluate(_OPEN_DATE_JS)
+            except Exception:
+                trig = None
+            if trig:
+                break
+            time.sleep(0.5)
+        if trig:
+            print(f"      [日期触发器 第{attempt}次] {trig['txt']} → 打开")
+            try:
+                page.mouse.click(trig["x"], trig["y"])
+            except Exception:
+                pass
+            time.sleep(1.3)         # 等下拉面板弹出
+        else:
+            print(f"      ⚠ 第{attempt}次未找到日期触发器")
+
+        # 步骤② 在面板里选 "Last 30 days"
+        for _ in range(8):
+            try:
+                opt = page.evaluate(_PICK_30_JS)
+            except Exception:
+                opt = None
+            if opt:
+                print(f"      [日期选项] {opt['txt']} → 选中")
+                try:
+                    page.mouse.click(opt["x"], opt["y"])
+                    return True
+                except Exception:
+                    pass
+            time.sleep(0.5)
+        print(f"      ⚠ 第{attempt}次未在面板找到 Last 30 days，重试...")
+    return False
+
+
 def crawl(page, base):
     """
     按固定顺序精准抓取 8 个关键页面。
@@ -305,59 +399,14 @@ def crawl(page, base):
     _go_home(page, base)
     _nav(page, "Analytics")
     wait_until_ready(page, max_wait=45)
-    time.sleep(2)          # 等图表首次渲染
+    time.sleep(2.5)        # 等图表首次渲染、日期触发器出现
 
-    # 步骤①：点开日期选择器（点击当前日期显示区域，弹出下拉日历）
-    # TikTok Analytics 的日期触发器可能显示 "Last 7 days"、"Last X days" 或具体日期范围
-    _DATE_TRIGGER_JS = r"""
-    () => {
-      for (const el of document.querySelectorAll('button,div,span')) {
-        const r = el.getBoundingClientRect();
-        if (r.left < 160 || r.width < 60 || r.height < 20) continue;
-        const txt = (el.innerText || '').replace(/\s+/g,' ').trim();
-        if (!txt || txt.length > 60) continue;
-        // 匹配"Last N days"形式或"日期 - 日期"形式的触发器
-        if (/last\s*\d+\s*days?/i.test(txt) || /\d{4}.*[-–].*\d{4}/.test(txt)) {
-          return { x: r.left + r.width / 2, y: r.top + r.height / 2, txt };
-        }
-      }
-      return null;
-    }
-    """
-    # 点日期触发器打开 picker
-    date_opened = False
-    for _ in range(8):
-        try:
-            info = page.evaluate(_DATE_TRIGGER_JS)
-            if info:
-                print(f"      [日期触发器] 找到: {info.get('txt','')} → 点击打开")
-                page.mouse.click(info["x"], info["y"])
-                date_opened = True
-                break
-        except Exception:
-            pass
-        time.sleep(0.5)
-    if not date_opened:
-        print("      ⚠ 未找到日期触发器，直接尝试 Last 30 days")
+    if not _select_last_30_days(page):
+        print("      ⚠ 未能选中 Last 30 days，将截取默认视图")
 
-    time.sleep(0.8)        # 等 dropdown/日历弹出
-
-    # 步骤②：在弹出的下拉面板里点 "Last 30 days"
-    day30_ok = False
-    try:
-        btn = page.get_by_text(re.compile(r"last\s*30", re.I)).first
-        if btn.is_visible(timeout=3000):
-            btn.click()
-            day30_ok = True
-    except Exception:
-        pass
-    if not day30_ok:
-        day30_ok = _content_click(page, r"last\s*30", poll=10, interval=0.5)
-    if not day30_ok:
-        print("      ⚠ 未找到 Last 30 days 选项，截取默认视图")
-
-    wait_until_ready(page, max_wait=30)
-    time.sleep(2)          # 等图表重渲染完成
+    # 选完后数据要按30天重新拉取：先等正文稳定，再多给图表一些渲染时间
+    wait_until_ready(page, max_wait=40)
+    time.sleep(5)          # 等 GMV 趋势图 / breakdown 重渲染完成（避免转圈时截图）
     results.append(_shot(page, "Analytics (Last 30 days)", ""))
 
     # ── 5 & 6. Account health → Shop health / Store rating ──────────
