@@ -18,6 +18,7 @@ TikTok Shop 后台关键页面精准抓取工具
 import json
 import re
 import time
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -321,11 +322,13 @@ def crawl(page, base):
     每页都从首页出发，通过点击真实侧栏/Tab 项导航，等内容稳定后截图。
     """
     results = []
+    alerts = {}
     print("  开始精准抓取 8 个目标页面...\n")
 
     # ── 1. Homepage ─────────────────────────────────────────────────
     _go_home(page, base)
     results.append(_shot(page, "Homepage", ""))
+    alerts = extract_home_alerts(page)     # 提取首页关键预警，用于推送消息正文
 
     # ── 2. Orders → Manage orders ───────────────────────────────────
     _go_home(page, base)
@@ -396,7 +399,7 @@ def crawl(page, base):
             _content_click(page, re.escape(sub))
         results.append(_shot(page, sub, "Finance"))
 
-    return results
+    return results, alerts
 
 
 # ─────────────────────────────────────────────
@@ -518,6 +521,124 @@ def save_excel(shop, pages):
     return out
 
 
+# ─────────────────────────────────────────────
+# 首页关键预警提取（用于推送消息正文）
+# ─────────────────────────────────────────────
+
+# 首页卡片标签 → 中文（按 innerText 里"标签...数字"的形态抓取）
+_HOME_LABELS = [
+    ("Orders to ship",    "待发货"),
+    ("Pending returns",   "待退货/退款"),
+    ("Rejected products", "被拒商品"),
+    ("Low stock",         "低库存"),
+    ("Negative reviews",  "差评"),
+]
+
+
+def extract_home_alerts(page) -> dict:
+    """从首页正文里尽力抓取关键预警数字；失败返回空 dict（不影响主流程）。"""
+    alerts = {}
+    try:
+        txt = page.inner_text("body")
+    except Exception:
+        return alerts
+
+    for en, cn in _HOME_LABELS:
+        m = re.search(re.escape(en) + r"[^\d]{0,12}([\d,]+)", txt)
+        if m:
+            alerts[cn] = m.group(1)
+
+    # 断货数：Out of stock: 99
+    m = re.search(r"Out of stock[:：]?\s*([\d,]+)", txt, re.I)
+    if m:
+        alerts["断货SKU"] = m.group(1)
+
+    # Shop Health 新增违规：12 new violations
+    m = re.search(r"([\d,]+)\s*new violations?", txt, re.I)
+    if m:
+        alerts["新增违规"] = m.group(1)
+
+    # Store Rating 限流风险（黄色横幅）
+    if re.search(r"store rating", txt, re.I) and re.search(r"at risk|restrict", txt, re.I):
+        alerts["_store_rating_risk"] = True
+
+    return alerts
+
+
+def build_caption(shop, alerts) -> str:
+    """构造推送消息正文：一眼看清当天关键情况。"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    lines = [f"📊 TikTok {shop['name']} 后台日报  {today}", "━━━━━━━━━━━━"]
+
+    order = ["待发货", "待退货/退款", "被拒商品", "低库存", "断货SKU", "差评", "新增违规"]
+    shown = [f"{k} {alerts[k]}" for k in order if k in alerts]
+    if shown:
+        # 每行放两项，便于手机阅读
+        for i in range(0, len(shown), 2):
+            lines.append(" ｜ ".join(shown[i:i + 2]))
+    else:
+        lines.append("（关键指标提取失败，详见附件 Excel）")
+
+    if alerts.get("_store_rating_risk"):
+        lines.append("⚠️ Store Rating 偏低，有 Affiliate 限流风险，请尽快处理")
+
+    lines.append("详细 8 个页面截图见附件 Excel ↓")
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────
+# 通过 Hermes Agent 推送（微信 / Discord）
+# ─────────────────────────────────────────────
+
+HERMES_ENABLED = True
+# 推送目标：微信用 "weixin"；发 Discord 频道用 "discord:#频道名"。
+# 不确定确切目标名时，在 WSL 里运行：hermes send --list
+HERMES_TARGET = "weixin"
+
+
+def _to_wsl_path(p: Path) -> str:
+    """Windows 路径 C:\\Users\\x\\a.xlsx → WSL 路径 /mnt/c/Users/x/a.xlsx。"""
+    s = p.resolve().as_posix()                 # 'C:/Users/x/a.xlsx'
+    m = re.match(r"^([A-Za-z]):/(.*)$", s)
+    if m:
+        return f"/mnt/{m.group(1).lower()}/{m.group(2)}"
+    return s                                    # 已是 Linux 路径（在 WSL 里直接跑时）
+
+
+def send_via_hermes(xlsx_path: Path, caption: str, target: str = HERMES_TARGET) -> bool:
+    """
+    调用 WSL 里的 Hermes Agent，把 Excel 作为文件附件推送到指定频道。
+    用 MEDIA:<path> + [[as_document]] 让 Hermes 以"文件"形式发送（不压缩）。
+    """
+    if not HERMES_ENABLED:
+        return False
+
+    wsl_path = _to_wsl_path(xlsx_path)
+    message = f"{caption}\n[[as_document]] MEDIA:{wsl_path}"
+    cmd = ["wsl", "hermes", "send", "--to", target, message]
+
+    print(f"\n  通过 Hermes 推送报表到 [{target}] ...")
+    print(f"    文件(WSL路径): {wsl_path}")
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=180)
+        if r.returncode == 0:
+            print("  ✓ 已通过 Hermes 推送（请到微信确认收到）")
+            return True
+        print(f"  ⚠ Hermes 返回非 0 (exit {r.returncode})")
+        if r.stdout.strip():
+            print(f"    stdout: {r.stdout.strip()[:500]}")
+        if r.stderr.strip():
+            print(f"    stderr: {r.stderr.strip()[:500]}")
+    except FileNotFoundError:
+        print("  ⚠ 未找到 wsl 命令：请在 Windows 上运行本脚本，且已安装 WSL")
+    except subprocess.TimeoutExpired:
+        print("  ⚠ Hermes 发送超时（180s）；确认 WSL 里 gateway 正在运行")
+    except Exception as e:
+        print(f"  ⚠ Hermes 发送异常: {e}")
+    return False
+
+
 def main():
     if not CONFIG_PATH.exists():
         print("找不到 shops.json"); return
@@ -537,13 +658,20 @@ def main():
         ctx = browser.contexts[0] if browser.contexts else browser.new_context()
         page = ctx.new_page()
         page.set_default_timeout(20000)
-        pages = crawl(page, base)
+        pages, alerts = crawl(page, base)
         page.close()
         browser.close()
 
     out = save_excel(shop, pages)
     print(f"\n✓ 完成！共 {len(pages)} 个页面")
     print(f"  Excel: {out}")
+
+    # ── 通过 Hermes 推送到微信 ──
+    caption = build_caption(shop, alerts)
+    print("\n  推送消息预览:")
+    for line in caption.splitlines():
+        print(f"    {line}")
+    send_via_hermes(out, caption)
 
 
 if __name__ == "__main__":
